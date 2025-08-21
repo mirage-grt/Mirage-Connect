@@ -47,6 +47,8 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
         final String remoteId = device.remoteId.str;
         final String advName = result.advertisementData.advName.trim();
         final String platformName = device.platformName.trim();
+        final List<String> advUuids =
+            result.advertisementData.serviceUuids.map((u) => u.str).toList();
         final String displayName = advName.isNotEmpty
             ? advName
             : (platformName.isNotEmpty ? platformName : '(unknown device)');
@@ -54,12 +56,14 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
         final existing = _devices[remoteId];
         if (existing == null ||
             existing.name != displayName ||
-            existing.rssi != result.rssi) {
+            existing.rssi != result.rssi ||
+            existing.advServiceUuids.join(',') != advUuids.join(',')) {
           _devices[remoteId] = _DeviceRowData(
             device: device,
             name: displayName,
             mac: remoteId,
             rssi: result.rssi,
+            advServiceUuids: advUuids,
           );
           changed = true;
         }
@@ -159,13 +163,26 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
                       child: const Icon(Icons.bluetooth),
                     ),
                     title: Text(row.name),
-                    subtitle: Text(row.mac),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(row.mac),
+                        if (row.advServiceUuids.isNotEmpty)
+                          Text(
+                            'AD UUIDs: ${_formatAdvUuids(row.advServiceUuids)}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                      ],
+                    ),
                     trailing: _RssiChip(rssi: row.rssi),
                     onTap: () {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => WifiCredentialsScreen(device: row.device),
+                          builder: (context) => WifiCredentialsScreen(
+                            device: row.device,
+                            preferredUuid: row.advServiceUuids.isNotEmpty ? row.advServiceUuids.first : null,
+                          ),
                         ),
                       );
                     },
@@ -182,9 +199,20 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
   }
 }
 
+extension on _DeviceScanScreenState {
+  String _formatAdvUuids(List<String> uuids) {
+    final int maxToShow = 2;
+    final List<String> lowered = uuids.map((e) => e.toLowerCase()).toList();
+    final List<String> shown = lowered.take(maxToShow).toList();
+    final int more = uuids.length - shown.length;
+    return more > 0 ? '${shown.join(', ')} +$more' : shown.join(', ');
+  }
+}
+
 class WifiCredentialsScreen extends StatefulWidget {
   final BluetoothDevice device;
-  const WifiCredentialsScreen({super.key, required this.device});
+  final String? preferredUuid; // from advertisement if present
+  const WifiCredentialsScreen({super.key, required this.device, this.preferredUuid});
   @override
   State<WifiCredentialsScreen> createState() => _WifiCredentialsScreenState();
 }
@@ -193,8 +221,10 @@ class _WifiCredentialsScreenState extends State<WifiCredentialsScreen> {
   final TextEditingController ssidController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   BluetoothCharacteristic? txCharacteristic;
+  BluetoothService? targetService;
   bool _writeWithoutResponse = false;
   String _connectError = '';
+  List<BluetoothService> _services = [];
 
   Future<void> connectAndDiscover() async {
     _connectError = '';
@@ -210,28 +240,45 @@ class _WifiCredentialsScreenState extends State<WifiCredentialsScreen> {
 
       final List<BluetoothService> services = await widget.device.discoverServices();
       BluetoothCharacteristic? chosen;
+      BluetoothService? chosenService;
       bool useWriteWithoutResponse = false;
 
+      // If a preferred UUID was advertised, try to target that service/characteristic first
+      final String? preferred = widget.preferredUuid?.toLowerCase();
+
       for (final BluetoothService service in services) {
+        final String serviceUuid = service.uuid.str.toLowerCase();
+        final bool serviceMatches = preferred != null && serviceUuid.contains(preferred);
         for (final BluetoothCharacteristic c in service.characteristics) {
+          final String charUuid = c.uuid.str.toLowerCase();
+          final bool charMatches = preferred != null && charUuid.contains(preferred);
+          final bool preferThis = (serviceMatches || charMatches);
           if (c.properties.writeWithoutResponse) {
-            chosen = c;
-            useWriteWithoutResponse = true;
+            if (chosen == null || preferThis) {
+              chosen = c;
+              chosenService = service;
+              useWriteWithoutResponse = true;
+            }
             break;
           }
           if (c.properties.write) {
-            chosen = c;
-            useWriteWithoutResponse = false;
+            if (chosen == null || preferThis) {
+              chosen = c;
+              chosenService = service;
+              useWriteWithoutResponse = false;
+            }
             break;
           }
         }
-        if (chosen != null) break;
+        if (chosen != null && (preferred == null || serviceMatches)) break;
       }
 
       if (mounted) {
         setState(() {
           txCharacteristic = chosen;
+          targetService = chosenService;
           _writeWithoutResponse = useWriteWithoutResponse;
+          _services = services;
         });
       }
     } catch (e) {
@@ -330,7 +377,38 @@ class _WifiCredentialsScreenState extends State<WifiCredentialsScreen> {
               leading: const Icon(Icons.info_outline),
               title: const Text('Device Info'),
               subtitle: Text('MAC: ${widget.device.remoteId.str}'),
-            )
+            ),
+            if (txCharacteristic != null) ListTile(
+              leading: const Icon(Icons.link),
+              title: const Text('Target GATT'),
+              subtitle: Text(
+                'Service: ${targetService?.uuid.str.toLowerCase() ?? 'unknown'}\nChar: ${txCharacteristic?.uuid.str.toLowerCase()}',
+              ),
+            ),
+            if (_services.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Discovered GATT Services',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      ..._services.map((s) => _GattServiceTile(service: s)).toList(),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -343,7 +421,8 @@ class _DeviceRowData {
   final String name;
   final String mac;
   final int rssi;
-  const _DeviceRowData({required this.device, required this.name, required this.mac, required this.rssi});
+  final List<String> advServiceUuids;
+  const _DeviceRowData({required this.device, required this.name, required this.mac, required this.rssi, required this.advServiceUuids});
 }
 
 class _RssiChip extends StatelessWidget {
@@ -362,6 +441,35 @@ class _RssiChip extends StatelessWidget {
     return Chip(
       label: Text('$rssi dBm'),
       avatar: Icon(Icons.network_wifi, size: 16, color: color),
+    );
+  }
+}
+
+class _GattServiceTile extends StatelessWidget {
+  final BluetoothService service;
+  const _GattServiceTile({required this.service});
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 8.0),
+      title: Text('Service: ${service.uuid.str.toLowerCase()}'),
+      childrenPadding: const EdgeInsets.only(left: 16.0, right: 8.0, bottom: 8.0),
+      children: service.characteristics.map((c) {
+        final List<String> props = [];
+        if (c.properties.read) props.add('read');
+        if (c.properties.write) props.add('write');
+        if (c.properties.writeWithoutResponse) props.add('writeNR');
+        if (c.properties.notify) props.add('notify');
+        if (c.properties.indicate) props.add('indicate');
+        return ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 8.0),
+          leading: const Icon(Icons.vpn_key, size: 18),
+          title: Text('Char: ${c.uuid.str.toLowerCase()}'),
+          subtitle: Text(props.join(', ')),
+        );
+      }).toList(),
     );
   }
 }
