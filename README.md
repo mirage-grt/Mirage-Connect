@@ -19,23 +19,9 @@ Modular structure — Code separated into client implementations (android, ios, 
 
 Ease of use — Designed to work with minimal user interaction during the provisioning workflow.
 
-Repository Structure
-Mirage-Connect/
-├── android/            # Android BLE client
-├── ios/                # iOS BLE client
-├── web/                # Web interface (if applicable)
-├── lib/                # Shared BLE and credential transfer libraries
-├── linux/              # Linux support
-├── macos/              # macOS support
-├── windows/            # Windows support
-├── test/               # Unit and integration tests
-├── assets/images/      # UI assets
-└── README.md           # This documentation
-
-
 Note: Platform folders contain the native code and build configs for each supported environment.
 
-Getting Started
+-- Getting Started --
 
 Prerequisites: Device with BLE support, appropriate SDK (Android Studio / Xcode / compatible build tools), and necessary developer certificates (for mobile platforms).
 
@@ -73,6 +59,6 @@ BLE libraries specific to platforms (Android BLE API, CoreBluetooth on iOS, etc.
 
 (Optional) Secure storage utilities for holding sensitive keys on either side
 
-🧪 Testing
+Testing
 
 There is a test/ folder with sample test suites for BLE operations and credential payload validation. Use platform testing tools or custom scripts to verify behavior.
